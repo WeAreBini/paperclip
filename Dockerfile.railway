@@ -1,18 +1,11 @@
-# Railway Dockerfile for Paperclip
-# Uses dev server approach which builds on startup
+FROM node:20-bookworm-slim AS base
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl git \
+  && rm -rf /var/lib/apt/lists/*
+RUN corepack enable
 
-FROM node:20-bookworm-slim
-
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
-
-# Create non-root user
-RUN addgroup -g 1001 -S paperclip && \
-    adduser -S -D -H -u 1001 -s /sbin/nologin -G paperclip paperclip
-
+FROM base AS deps
 WORKDIR /app
-
-# Copy package files first for better caching
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY cli/package.json cli/
 COPY server/package.json server/
@@ -22,29 +15,20 @@ COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
-COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
-COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
-COPY packages/adapters/openclaw/package.json packages/adapters/openclaw/
-COPY packages/adapters/process/package.json packages/adapters/process/
-COPY packages/adapters/http/package.json packages/adapters/http/
-COPY skills ./skills
-
-# Install dependencies
 RUN pnpm install --frozen-lockfile
 
-# Copy source code
+FROM base AS build
+WORKDIR /app
+COPY --from=deps /app /app
 COPY . .
+RUN pnpm --filter @paperclip/ui build
+RUN pnpm --filter @paperclip/server build
 
-# Build the project
-RUN pnpm build || true
+FROM base AS production
+WORKDIR /app
+COPY --from=build /app /app
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest
 
-# Create data directory
-RUN mkdir -p /paperclip/instances/default && \
-    chown -R paperclip:paperclip /paperclip /app
-
-USER paperclip
-
-# Environment
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \
@@ -55,11 +39,9 @@ ENV NODE_ENV=production \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=public
 
+# Railway volume mounted at /paperclip
+RUN mkdir -p /paperclip/instances/default
+
 EXPOSE 3100
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retry=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3100/api/health || exit 1
-
-# Start the server
-CMD ["npx", "tsx", "server/src/index.ts"]
+CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
