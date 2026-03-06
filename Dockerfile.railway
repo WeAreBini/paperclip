@@ -1,4 +1,4 @@
-# Railway Dockerfile - Fixed for monorepo structure
+# Railway Dockerfile - Simplified approach
 FROM node:20-bookworm-slim
 
 RUN apt-get update \
@@ -8,32 +8,11 @@ RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 
 WORKDIR /app
 
-# Copy root package files
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
-
-# Copy all package.json files for workspace packages
-COPY cli/package.json cli/
-COPY server/package.json server/
-COPY ui/package.json ui/
-COPY packages/shared/package.json packages/shared/
-COPY packages/db/package.json packages/db/
-COPY packages/adapter-utils/package.json packages/adapter-utils/
-
-# Copy adapter package.json files (nested structure)
-COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
-COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
-COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
-COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
-COPY packages/adapters/openclaw/package.json packages/adapters/openclaw/
-
-# Copy skills package.json if any
-COPY skills/*/package.json skills/*/ 2>/dev/null || true
+# Copy everything first (simpler than trying to copy individual package.json files)
+COPY . .
 
 # Install dependencies
 RUN pnpm install --no-frozen-lockfile
-
-# Copy all source code
-COPY . .
 
 # Create user and set up directories
 RUN addgroup -g 1001 -S paperclip && \
