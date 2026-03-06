@@ -1,9 +1,8 @@
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile.railway"
+dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "node server/dist/index.js"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
