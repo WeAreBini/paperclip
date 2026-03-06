@@ -1,7 +1,6 @@
-# Railway Dockerfile - Use tsx to run TypeScript directly
+# Railway Dockerfile - Development approach that works locally
 FROM node:20-bookworm-slim
 
-# Install pnpm and required tools
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl git \
   && rm -rf /var/lib/apt/lists/*
@@ -9,27 +8,21 @@ RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 
 WORKDIR /app
 
-# Copy package files
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
+# Copy all package files first
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY cli/package.json cli/
 COPY server/package.json server/
 COPY ui/package.json ui/
-COPY packages/shared/package.json packages/shared/
-COPY packages/db/package.json packages/db/
-COPY packages/adapter-utils/package.json packages/adapter-utils/
-COPY packages/adapters/*/package.json packages/adapters/*/
+COPY packages/*/package.json packages/*/
 COPY skills/*/package.json skills/*/
 
-# Install all dependencies
+# Install dependencies
 RUN pnpm install --frozen-lockfile
 
-# Copy source code
+# Copy all source
 COPY . .
 
-# Build UI only (server runs with tsx)
-RUN pnpm --filter @paperclipai/ui build || true
-
-# Create non-root user
+# Create user and set up directories
 RUN addgroup -g 1001 -S paperclip && \
     adduser -S -D -H -u 1001 -s /sbin/nologin -G paperclip paperclip && \
     mkdir -p /paperclip/instances/default && \
@@ -37,12 +30,12 @@ RUN addgroup -g 1001 -S paperclip && \
 
 USER paperclip
 
-# Environment
 ENV NODE_ENV=production \
-  HOME=/paperclip \
-  HOST=0.0.0.0 \
+  DATABASE_URL="${DATABASE_URL}" \
   PORT=3100 \
+  HOST=0.0.0.0 \
   SERVE_UI=true \
+  HOME=/paperclip \
   PAPERCLIP_HOME=/paperclip \
   PAPERCLIP_INSTANCE_ID=default \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
@@ -50,9 +43,8 @@ ENV NODE_ENV=production \
 
 EXPOSE 3100
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retry=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:3100/api/health || exit 1
 
-# Run with tsx (TypeScript execution engine)
+# Use tsx to run TypeScript files directly
 CMD ["npx", "tsx", "server/src/index.ts"]
