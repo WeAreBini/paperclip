@@ -1,11 +1,15 @@
-FROM node:20-bookworm-slim AS base
+# Railway Dockerfile - Use tsx to run TypeScript directly
+FROM node:20-bookworm-slim
+
+# Install pnpm and required tools
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl git \
   && rm -rf /var/lib/apt/lists/*
-RUN corepack enable
+RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 
-FROM base AS deps
 WORKDIR /app
+
+# Copy package files
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY cli/package.json cli/
 COPY server/package.json server/
@@ -13,22 +17,27 @@ COPY ui/package.json ui/
 COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
-COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
-COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
+COPY packages/adapters/*/package.json packages/adapters/*/
+COPY skills/*/package.json skills/*/
+
+# Install all dependencies
 RUN pnpm install --frozen-lockfile
 
-FROM base AS build
-WORKDIR /app
-COPY --from=deps /app /app
+# Copy source code
 COPY . .
-RUN pnpm --filter @paperclip/ui build
-RUN pnpm --filter @paperclip/server build
 
-FROM base AS production
-WORKDIR /app
-COPY --from=build /app /app
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest
+# Build UI only (server runs with tsx)
+RUN pnpm --filter @paperclipai/ui build || true
 
+# Create non-root user
+RUN addgroup -g 1001 -S paperclip && \
+    adduser -S -D -H -u 1001 -s /sbin/nologin -G paperclip paperclip && \
+    mkdir -p /paperclip/instances/default && \
+    chown -R paperclip:paperclip /paperclip /app
+
+USER paperclip
+
+# Environment
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \
@@ -39,9 +48,11 @@ ENV NODE_ENV=production \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=public
 
-# Railway volume mounted at /paperclip
-RUN mkdir -p /paperclip/instances/default
-
 EXPOSE 3100
 
-CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retry=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3100/api/health || exit 1
+
+# Run with tsx (TypeScript execution engine)
+CMD ["npx", "tsx", "server/src/index.ts"]
