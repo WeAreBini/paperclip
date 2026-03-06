@@ -17,7 +17,7 @@ COPY packages/*/package.json packages/*/
 COPY skills/*/package.json skills/*/
 
 # Install dependencies
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --no-frozen-lockfile
 
 # Copy all source
 COPY . .
