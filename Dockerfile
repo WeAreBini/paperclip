@@ -34,6 +34,10 @@ RUN pnpm --filter @paperclipai/shared build || true
 RUN pnpm --filter @paperclipai/adapter-utils build || true
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/server build
+
+# Replace exports from src/*.ts to dist/*.js in packages within the container so node runtime parses properly
+RUN find packages -name "package.json" -exec sed -i -e 's|./src/index.ts|./dist/index.js|g' -e 's|./src/\*.ts|./dist/*.js|g' {} +
+
 RUN ls -la server/dist/ || echo "server/dist not found"
 
 FROM node:20-bookworm-slim AS production
