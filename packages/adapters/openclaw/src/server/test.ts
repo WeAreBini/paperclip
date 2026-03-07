@@ -29,6 +29,28 @@ function normalizeHostname(value: string | null | undefined): string | null {
   return trimmed.toLowerCase();
 }
 
+function isWakePath(pathname: string): boolean {
+  const value = pathname.trim().toLowerCase();
+  return value === "/hooks/wake" || value.endsWith("/hooks/wake");
+}
+
+function isHooksPath(pathname: string): boolean {
+  const value = pathname.trim().toLowerCase();
+  return (
+    value === "/hooks" ||
+    value.startsWith("/hooks/") ||
+    value.endsWith("/hooks") ||
+    value.includes("/hooks/")
+  );
+}
+
+function normalizeTransport(value: unknown): "sse" | "webhook" | null {
+  const normalized = asString(value, "sse").trim().toLowerCase();
+  if (!normalized || normalized === "sse") return "sse";
+  if (normalized === "webhook") return "webhook";
+  return null;
+}
+
 function pushDeploymentDiagnostics(
   checks: AdapterEnvironmentCheck[],
   ctx: AdapterEnvironmentTestContext,
@@ -97,13 +119,15 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const urlValue = asString(config.url, "");
+  const streamTransportValue = config.streamTransport ?? config.transport;
+  const streamTransport = normalizeTransport(streamTransportValue);
 
   if (!urlValue) {
     checks.push({
       code: "openclaw_url_missing",
       level: "error",
-      message: "OpenClaw adapter requires a webhook URL.",
-      hint: "Set adapterConfig.url to your OpenClaw webhook endpoint.",
+      message: "OpenClaw adapter requires an endpoint URL.",
+      hint: "Set adapterConfig.url to your OpenClaw transport endpoint.",
     });
     return {
       adapterType: ctx.adapterType,
@@ -148,6 +172,30 @@ export async function testEnvironment(
         hint: "Use a reachable hostname/IP (for example Tailscale/private hostname or public domain).",
       });
     }
+
+    if (streamTransport === "sse" && (isWakePath(url.pathname) || isHooksPath(url.pathname))) {
+      checks.push({
+        code: "openclaw_wake_endpoint_incompatible",
+        level: "error",
+        message: "Endpoint targets /hooks/*, which is not stream-capable for SSE transport.",
+        hint: "Use webhook transport for /hooks/* endpoints.",
+      });
+    }
+  }
+
+  if (!streamTransport) {
+    checks.push({
+      code: "openclaw_stream_transport_unsupported",
+      level: "error",
+      message: `Unsupported streamTransport: ${String(streamTransportValue)}`,
+      hint: "Use streamTransport=sse or streamTransport=webhook.",
+    });
+  } else {
+    checks.push({
+      code: "openclaw_stream_transport_configured",
+      level: "info",
+      message: `Configured stream transport: ${streamTransport}`,
+    });
   }
 
   pushDeploymentDiagnostics(checks, ctx, url);
@@ -169,7 +217,7 @@ export async function testEnvironment(
           code: "openclaw_endpoint_probe_unexpected_status",
           level: "warn",
           message: `Endpoint probe returned HTTP ${response.status}.`,
-          hint: "Verify OpenClaw webhook reachability and auth/network settings.",
+          hint: "Verify OpenClaw endpoint reachability and auth/network settings.",
         });
       } else {
         checks.push({

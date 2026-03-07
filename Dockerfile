@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim AS base
+FROM node:lts-trixie-slim AS base
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl git \
   && rm -rf /var/lib/apt/lists/*
@@ -39,6 +39,7 @@ RUN pnpm --filter @paperclipai/adapter-openclaw build || true
 RUN pnpm --filter @paperclipai/adapter-opencode-local build || true
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/server build
+RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
 # Replace exports from src/*.ts to dist/*.js in packages within the container so node runtime parses properly
 RUN find packages -name "package.json" -exec sed -i -e 's|"./src/\(.*\)\.ts"|"./dist/\1.js"|g' {} +
@@ -73,6 +74,7 @@ ENV NODE_ENV=production \
   SERVE_UI=true \
   PAPERCLIP_HOME=/paperclip \
   PAPERCLIP_INSTANCE_ID=default \
+  PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=public
 
