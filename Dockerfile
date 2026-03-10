@@ -17,6 +17,7 @@ COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
 COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-gateway/
 COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
+
 RUN pnpm install --frozen-lockfile
 
 FROM base AS build
@@ -46,19 +47,12 @@ RUN ls -la server/dist/ || echo "server/dist not found"
 
 FROM node:20-bookworm-slim AS production
 WORKDIR /app
-COPY --from=build /app/server/dist ./server/dist
-COPY --from=build /app/server/node_modules ./server/node_modules
-COPY --from=build /app/server/package.json ./server/
-COPY --from=build /app/ui/dist ./ui/dist
-COPY --from=build /app/ui/package.json ./ui/
-COPY --from=build /app/packages ./packages
-COPY --from=build /app/cli ./cli
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/package.json ./
-COPY --from=build /app/pnpm-workspace.yaml ./
-COPY --from=build /app/pnpm-lock.yaml ./
 
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest
+COPY --chown=node:node --from=build /app /app
+
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
+  && mkdir -p /paperclip \
+  && chown node:node /paperclip
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
@@ -72,7 +66,8 @@ ENV NODE_ENV=production \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=public
 
 VOLUME ["/paperclip"]
-RUN mkdir -p /paperclip/instances/default
+RUN mkdir -p /paperclip/instances/default && chown -R node:node /paperclip
 
 EXPOSE 3100
+USER node
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
