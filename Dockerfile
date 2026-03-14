@@ -72,4 +72,4 @@ RUN mkdir -p /paperclip/instances/default && chown -R node:node /paperclip
 
 EXPOSE 3100
 USER node
-CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+CMD ["sh", "-c", "node --import ./server/node_modules/tsx/dist/loader.mjs packages/db/dist/migrate.js && node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js"]
