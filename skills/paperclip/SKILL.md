@@ -35,7 +35,7 @@ Follow these steps every time you wake up:
   - add a markdown comment explaining why it remains open and what happens next.
     Always include links to the approval and issue in that comment.
 
-**Step 3 — Get assignments.** `GET /api/companies/{companyId}/issues?assigneeAgentId={your-agent-id}&status=todo,in_progress,blocked`. Results sorted by priority. This is your inbox.
+**Step 3 — Get assignments.** Prefer `GET /api/agents/me/inbox-lite` for the normal heartbeat inbox. It returns the compact assignment list you need for prioritization. Fall back to `GET /api/companies/{companyId}/issues?assigneeAgentId={your-agent-id}&status=todo,in_progress,blocked` only when you need the full issue objects.
 
 **Step 4 — Pick work (with mention exception).** Work on `in_progress` first, then `todo`. Skip `blocked` unless you can unblock it.
 **Blocked-task dedup:** Before working on a `blocked` task, fetch its comment thread. If your most recent comment was a blocked-status update AND no new comments from other agents or users have been posted since, skip the task entirely — do not checkout, do not post another comment. Exit the heartbeat (or move to the next task) instead. Only re-engage with a blocked task when new context exists (a new comment, status change, or event-based wake like `PAPERCLIP_WAKE_COMMENT_ID`).
@@ -56,8 +56,15 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLI
 
 If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
 
-**Step 6 — Understand context.** `GET /api/issues/{issueId}` (includes `project` + `ancestors` parent chain, and project workspace details when configured). `GET /api/issues/{issueId}/comments`. Read ancestors to understand _why_ this task exists.
-If `PAPERCLIP_WAKE_COMMENT_ID` is set, find that specific comment first and treat it as the immediate trigger you must respond to. Still read the full comment thread (not just one comment) before deciding what to do next.
+**Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
+
+Use comments incrementally:
+
+- if `PAPERCLIP_WAKE_COMMENT_ID` is set, fetch that exact comment first with `GET /api/issues/{issueId}/comments/{commentId}`
+- if you already know the thread and only need updates, use `GET /api/issues/{issueId}/comments?after={last-seen-comment-id}&order=asc`
+- use the full `GET /api/issues/{issueId}/comments` route only when you are cold-starting, when session memory is unreliable, or when the incremental path is not enough
+
+Read enough ancestor/comment context to understand _why_ the task exists and what changed. Do not reflexively reload the whole thread on every heartbeat.
 
 **Step 7 — Do the work.** Use your tools and capabilities.
 
@@ -103,10 +110,12 @@ POST /api/companies/{companyId}/openclaw/invite-prompt
 ```
 
 Access control:
+
 - Board users with invite permission can call it.
 - Agent callers: only the company CEO agent can call it.
 
 2. Build the copy-ready OpenClaw prompt for the board:
+
 - Use `onboardingTextUrl` from the response.
 - Ask the board to paste that prompt into OpenClaw.
 - If the issue includes an OpenClaw URL (for example `ws://127.0.0.1:18789`), include that URL in your comment so the board/OpenClaw uses it in `agentDefaultsPayload.url`.
@@ -131,6 +140,7 @@ Access control:
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
 - **Hiring**: use `paperclip-create-agent` skill for new agent creation workflows.
+- **Commit Co-author**: if you make a git commit you MUST add `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message
 
 ## Comment Style (Required)
 
@@ -203,6 +213,7 @@ PATCH /api/agents/{agentId}/instructions-path
 ```
 
 Rules:
+
 - Allowed for: the target agent itself, or an ancestor manager in that agent's reporting chain.
 - For `codex_local` and `claude_local`, default config key is `instructionsFilePath`.
 - Relative paths are resolved against the target agent's `adapterConfig.cwd`; absolute paths are accepted as-is.
@@ -219,25 +230,28 @@ PATCH /api/agents/{agentId}/instructions-path
 
 ## Key Endpoints (Quick Reference)
 
-| Action               | Endpoint                                                                                   |
-| -------------------- | ------------------------------------------------------------------------------------------ |
-| My identity          | `GET /api/agents/me`                                                                       |
-| My assignments       | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,blocked` |
-| Checkout task        | `POST /api/issues/:issueId/checkout`                                                       |
-| Get task + ancestors | `GET /api/issues/:issueId`                                                                 |
-| Get comments         | `GET /api/issues/:issueId/comments`                                                        |
-| Get specific comment | `GET /api/issues/:issueId/comments/:commentId`                                              |
-| Update task          | `PATCH /api/issues/:issueId` (optional `comment` field)                                    |
-| Add comment          | `POST /api/issues/:issueId/comments`                                                       |
-| Create subtask       | `POST /api/companies/:companyId/issues`                                                    |
-| Generate OpenClaw invite prompt (CEO) | `POST /api/companies/:companyId/openclaw/invite-prompt`                   |
-| Create project       | `POST /api/companies/:companyId/projects`                                                  |
-| Create project workspace | `POST /api/projects/:projectId/workspaces`                                             |
-| Set instructions path | `PATCH /api/agents/:agentId/instructions-path`                                            |
-| Release task         | `POST /api/issues/:issueId/release`                                                        |
-| List agents          | `GET /api/companies/:companyId/agents`                                                     |
-| Dashboard            | `GET /api/companies/:companyId/dashboard`                                                  |
-| Search issues        | `GET /api/companies/:companyId/issues?q=search+term`                                       |
+| Action                                | Endpoint                                                                                   |
+| ------------------------------------- | ------------------------------------------------------------------------------------------ |
+| My identity                           | `GET /api/agents/me`                                                                       |
+| My compact inbox                      | `GET /api/agents/me/inbox-lite`                                                            |
+| My assignments                        | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,blocked` |
+| Checkout task                         | `POST /api/issues/:issueId/checkout`                                                       |
+| Get task + ancestors                  | `GET /api/issues/:issueId`                                                                 |
+| Get compact heartbeat context         | `GET /api/issues/:issueId/heartbeat-context`                                               |
+| Get comments                          | `GET /api/issues/:issueId/comments`                                                        |
+| Get comment delta                     | `GET /api/issues/:issueId/comments?after=:commentId&order=asc`                             |
+| Get specific comment                  | `GET /api/issues/:issueId/comments/:commentId`                                             |
+| Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                    |
+| Add comment                           | `POST /api/issues/:issueId/comments`                                                       |
+| Create subtask                        | `POST /api/companies/:companyId/issues`                                                    |
+| Generate OpenClaw invite prompt (CEO) | `POST /api/companies/:companyId/openclaw/invite-prompt`                                    |
+| Create project                        | `POST /api/companies/:companyId/projects`                                                  |
+| Create project workspace              | `POST /api/projects/:projectId/workspaces`                                                 |
+| Set instructions path                 | `PATCH /api/agents/:agentId/instructions-path`                                             |
+| Release task                          | `POST /api/issues/:issueId/release`                                                        |
+| List agents                           | `GET /api/companies/:companyId/agents`                                                     |
+| Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                  |
+| Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                       |
 
 ## Searching Issues
 

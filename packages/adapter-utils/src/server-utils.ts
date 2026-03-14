@@ -32,6 +32,23 @@ export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
+const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
+  "../../skills",
+  "../../../../../skills",
+];
+
+export interface PaperclipSkillEntry {
+  name: string;
+  source: string;
+}
+
+function normalizePathSlashes(value: string): string {
+  return value.replaceAll("\\", "/");
+}
+
+function isMaintainerOnlySkillTarget(candidate: string): boolean {
+  return normalizePathSlashes(candidate).includes("/.agents/skills/");
+}
 
 export function parseObject(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -93,6 +110,16 @@ export function resolvePathValue(obj: Record<string, unknown>, dottedPath: strin
 
 export function renderTemplate(template: string, data: Record<string, unknown>) {
   return template.replace(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_, path) => resolvePathValue(data, path));
+}
+
+export function joinPromptSections(
+  sections: Array<string | null | undefined>,
+  separator = "\n\n",
+) {
+  return sections
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean)
+    .join(separator);
 }
 
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
@@ -245,6 +272,136 @@ export async function ensureAbsoluteDirectory(
   }
 }
 
+export async function resolvePaperclipSkillsDir(
+  moduleDir: string,
+  additionalCandidates: string[] = [],
+): Promise<string | null> {
+  const candidates = [
+    ...PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES.map((relativePath) => path.resolve(moduleDir, relativePath)),
+    ...additionalCandidates.map((candidate) => path.resolve(candidate)),
+  ];
+  const seenRoots = new Set<string>();
+
+  for (const root of candidates) {
+    if (seenRoots.has(root)) continue;
+    seenRoots.add(root);
+    const isDirectory = await fs.stat(root).then((stats) => stats.isDirectory()).catch(() => false);
+    if (isDirectory) return root;
+  }
+
+  return null;
+}
+
+export async function listPaperclipSkillEntries(
+  moduleDir: string,
+  additionalCandidates: string[] = [],
+): Promise<PaperclipSkillEntry[]> {
+  const root = await resolvePaperclipSkillsDir(moduleDir, additionalCandidates);
+  if (!root) return [];
+
+  try {
+    const entries = await fs.readdir(root, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => ({
+        name: entry.name,
+        source: path.join(root, entry.name),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+export async function readPaperclipSkillMarkdown(
+  moduleDir: string,
+  skillName: string,
+): Promise<string | null> {
+  const normalized = skillName.trim().toLowerCase();
+  if (!normalized) return null;
+
+  const entries = await listPaperclipSkillEntries(moduleDir);
+  const match = entries.find((entry) => entry.name === normalized);
+  if (!match) return null;
+
+  try {
+    return await fs.readFile(path.join(match.source, "SKILL.md"), "utf8");
+  } catch {
+    return null;
+  }
+}
+
+export async function ensurePaperclipSkillSymlink(
+  source: string,
+  target: string,
+  linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
+    fs.symlink(linkSource, linkTarget),
+): Promise<"created" | "repaired" | "skipped"> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing) {
+    await linkSkill(source, target);
+    return "created";
+  }
+
+  if (!existing.isSymbolicLink()) {
+    return "skipped";
+  }
+
+  const linkedPath = await fs.readlink(target).catch(() => null);
+  if (!linkedPath) return "skipped";
+
+  const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
+  if (resolvedLinkedPath === source) {
+    return "skipped";
+  }
+
+  const linkedPathExists = await fs.stat(resolvedLinkedPath).then(() => true).catch(() => false);
+  if (linkedPathExists) {
+    return "skipped";
+  }
+
+  await fs.unlink(target);
+  await linkSkill(source, target);
+  return "repaired";
+}
+
+export async function removeMaintainerOnlySkillSymlinks(
+  skillsHome: string,
+  allowedSkillNames: Iterable<string>,
+): Promise<string[]> {
+  const allowed = new Set(Array.from(allowedSkillNames));
+  try {
+    const entries = await fs.readdir(skillsHome, { withFileTypes: true });
+    const removed: string[] = [];
+    for (const entry of entries) {
+      if (allowed.has(entry.name)) continue;
+
+      const target = path.join(skillsHome, entry.name);
+      const existing = await fs.lstat(target).catch(() => null);
+      if (!existing?.isSymbolicLink()) continue;
+
+      const linkedPath = await fs.readlink(target).catch(() => null);
+      if (!linkedPath) continue;
+
+      const resolvedLinkedPath = path.isAbsolute(linkedPath)
+        ? linkedPath
+        : path.resolve(path.dirname(target), linkedPath);
+      if (
+        !isMaintainerOnlySkillTarget(linkedPath) &&
+        !isMaintainerOnlySkillTarget(resolvedLinkedPath)
+      ) {
+        continue;
+      }
+
+      await fs.unlink(target);
+      removed.push(entry.name);
+    }
+
+    return removed;
+  } catch {
+    return [];
+  }
+}
+
 export async function ensureCommandResolvable(command: string, cwd: string, env: NodeJS.ProcessEnv) {
   const resolved = await resolveCommandPath(command, cwd, env);
   if (resolved) return;
@@ -272,7 +429,24 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const mergedEnv = ensurePathInEnv({ ...process.env, ...opts.env });
+    const rawMerged: NodeJS.ProcessEnv = { ...process.env, ...opts.env };
+
+    // Strip Claude Code nesting-guard env vars so spawned `claude` processes
+    // don't refuse to start with "cannot be launched inside another session".
+    // These vars leak in when the Paperclip server itself is started from
+    // within a Claude Code session (e.g. `npx paperclipai run` in a terminal
+    // owned by Claude Code) or when cron inherits a contaminated shell env.
+    const CLAUDE_CODE_NESTING_VARS = [
+      "CLAUDECODE",
+      "CLAUDE_CODE_ENTRYPOINT",
+      "CLAUDE_CODE_SESSION",
+      "CLAUDE_CODE_PARENT_SESSION",
+    ] as const;
+    for (const key of CLAUDE_CODE_NESTING_VARS) {
+      delete rawMerged[key];
+    }
+
+    const mergedEnv = ensurePathInEnv(rawMerged);
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv)
       .then((target) => {
         const child = spawn(target.command, target.args, {
