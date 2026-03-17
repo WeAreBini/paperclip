@@ -11,8 +11,8 @@ WORKDIR /app
 # Copy everything first (simpler than trying to copy individual package.json files)
 COPY . .
 
-# Install dependencies
-RUN pnpm install --no-frozen-lockfile
+# Install dependencies (skip-npm-cache to avoid pnpm caching issues)
+RUN pnpm install --no-frozen-lockfile --skip-npm-cache || pnpm install --no-frozen-lockfile
 
 # Create user and set up directories
 RUN addgroup -g 1001 -S paperclip && \
