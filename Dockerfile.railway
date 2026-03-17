@@ -11,8 +11,9 @@ WORKDIR /app
 # Copy everything first (simpler than trying to copy individual package.json files)
 COPY . .
 
-# Install dependencies (skip-npm-cache to avoid pnpm caching issues)
-RUN pnpm install --no-frozen-lockfile --skip-npm-cache || pnpm install --no-frozen-lockfile
+# Install dependencies (with devDependencies for tsx)
+ENV NODE_ENV=development
+RUN pnpm install --no-frozen-lockfile
 
 # Create user and set up directories
 RUN addgroup -g 1001 -S paperclip && \
