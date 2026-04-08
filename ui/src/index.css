@@ -301,8 +301,8 @@
 }
 
 .shimmer-text {
-  --shimmer-base: hsl(var(--foreground));
-  --shimmer-highlight: hsl(var(--foreground) / 0.35);
+  --shimmer-base: var(--foreground);
+  --shimmer-highlight: color-mix(in oklch, var(--foreground) 35%, transparent);
   background: linear-gradient(
     90deg,
     var(--shimmer-base) 0%,
