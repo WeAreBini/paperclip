@@ -9,10 +9,12 @@ import {
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePathInEnv,
+  resolveCommandForLogs,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
+import { resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 
@@ -81,12 +83,25 @@ export async function testEnvironment(
     if (typeof value === "string") env[key] = value;
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const sharedCodexHome = resolveSharedCodexHomeDir(runtimeEnv);
+  const managedCodexHome = resolveManagedCodexHomeDir(runtimeEnv, ctx.companyId);
+  const sharedAuthPath = path.join(sharedCodexHome, "auth.json");
+
+  checks.push({
+    code: "codex_home_paths",
+    level: "info",
+    message: "Codex home paths resolved for Paperclip.",
+    detail: `shared=${sharedCodexHome}; managed=${managedCodexHome}`,
+  });
+
   try {
     await ensureCommandResolvable(command, cwd, runtimeEnv);
+    const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
     checks.push({
       code: "codex_command_resolvable",
       level: "info",
       message: `Command is executable: ${command}`,
+      detail: `Resolved path: ${resolvedCommand}`,
     });
   } catch (err) {
     checks.push({
@@ -99,8 +114,10 @@ export async function testEnvironment(
 
   const configOpenAiKey = env.OPENAI_API_KEY;
   const hostOpenAiKey = process.env.OPENAI_API_KEY;
+  let hasAuthConfigured = false;
   if (isNonEmpty(configOpenAiKey) || isNonEmpty(hostOpenAiKey)) {
     const source = isNonEmpty(configOpenAiKey) ? "adapter config env" : "server environment";
+    hasAuthConfigured = true;
     checks.push({
       code: "codex_openai_api_key_present",
       level: "info",
@@ -111,6 +128,7 @@ export async function testEnvironment(
     const codexHome = isNonEmpty(env.CODEX_HOME) ? env.CODEX_HOME : undefined;
     const codexAuth = await readCodexAuthInfo(codexHome).catch(() => null);
     if (codexAuth) {
+      hasAuthConfigured = true;
       checks.push({
         code: "codex_native_auth_present",
         level: "info",
@@ -122,7 +140,8 @@ export async function testEnvironment(
         code: "codex_openai_api_key_missing",
         level: "warn",
         message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
-        hint: "Set OPENAI_API_KEY in adapter env, shell environment, or run `codex auth` to log in.",
+        detail: `Paperclip looked for Codex auth at ${sharedAuthPath}. Service HOME is ${runtimeEnv.HOME ?? process.env.HOME ?? codexHomeDir()}.`,
+        hint: `Set OPENAI_API_KEY in adapter env, shell environment, or run \`codex auth\` so credentials are available at ${sharedAuthPath}.`,
       });
     }
   }
@@ -197,6 +216,14 @@ export async function testEnvironment(
           message: "Codex CLI is installed, but authentication is not ready.",
           ...(detail ? { detail } : {}),
           hint: "Configure OPENAI_API_KEY in adapter env/shell or run `codex login`, then retry the probe.",
+        });
+      } else if (!hasAuthConfigured) {
+        checks.push({
+          code: "codex_hello_probe_auth_unavailable",
+          level: "warn",
+          message: "Codex hello probe could not complete because Paperclip has no usable authentication.",
+          ...(detail ? { detail } : {}),
+          hint: `Authenticate Codex for the Paperclip service user or provide OPENAI_API_KEY. Expected auth file: ${sharedAuthPath}`,
         });
       } else {
         checks.push({

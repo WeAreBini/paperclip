@@ -65,6 +65,7 @@ describe("codex_local environment diagnostics", () => {
 
       expect(result.checks.some((check) => check.code === "codex_native_auth_present")).toBe(true);
       expect(result.checks.some((check) => check.code === "codex_openai_api_key_missing")).toBe(false);
+      expect(result.checks.some((check) => check.code === "codex_home_paths")).toBe(true);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -94,6 +95,9 @@ describe("codex_local environment diagnostics", () => {
 
       expect(result.checks.some((check) => check.code === "codex_openai_api_key_missing")).toBe(true);
       expect(result.checks.some((check) => check.code === "codex_native_auth_present")).toBe(false);
+      expect(
+        result.checks.find((check) => check.code === "codex_openai_api_key_missing")?.detail,
+      ).toContain(path.join(codexHome, "auth.json"));
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
