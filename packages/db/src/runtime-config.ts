@@ -127,9 +127,19 @@ function parseEnvFile(contents: string): Record<string, string> {
   return entries;
 }
 
+function isIgnorableOptionalEnvReadError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null | undefined)?.code;
+  return code === "EACCES" || code === "EPERM";
+}
+
 function readEnvEntries(envPath: string): Record<string, string> {
   if (!existsSync(envPath)) return {};
-  return parseEnvFile(readFileSync(envPath, "utf8"));
+  try {
+    return parseEnvFile(readFileSync(envPath, "utf8"));
+  } catch (error) {
+    if (isIgnorableOptionalEnvReadError(error)) return {};
+    throw error;
+  }
 }
 
 function migrateLegacyConfig(raw: unknown): PartialConfig | null {
@@ -215,7 +225,6 @@ function readConfig(configPath: string): PartialConfig | null {
 export function resolveDatabaseTarget(): ResolvedDatabaseTarget {
   const configPath = resolvePaperclipConfigPath();
   const envPath = resolvePaperclipEnvPath(configPath);
-  const envEntries = readEnvEntries(envPath);
 
   const envUrl = process.env.DATABASE_URL?.trim();
   if (envUrl) {
@@ -227,6 +236,8 @@ export function resolveDatabaseTarget(): ResolvedDatabaseTarget {
       envPath,
     };
   }
+
+  const envEntries = readEnvEntries(envPath);
 
   const fileEnvUrl = envEntries.DATABASE_URL?.trim();
   if (fileEnvUrl) {
