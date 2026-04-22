@@ -401,6 +401,11 @@ async function migrationStatementAlreadyApplied(
     return constraintExists(sql, addConstraintMatch[2]);
   }
 
+  const doBlockConstraintMatch = normalized.match(/\bADD CONSTRAINT "([^"]+)"/i);
+  if (doBlockConstraintMatch) {
+    return constraintExists(sql, doBlockConstraintMatch[1]);
+  }
+
   // If we cannot reason about a statement safely, require manual migration.
   return false;
 }

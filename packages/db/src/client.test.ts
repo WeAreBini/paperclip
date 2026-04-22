@@ -5,6 +5,7 @@ import postgres from "postgres";
 import {
   applyPendingMigrations,
   inspectMigrations,
+  reconcilePendingMigrationHistory,
 } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -535,6 +536,82 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
             "plugin_migrations_status_idx",
           ]),
         );
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "repairs migration 0063 when issue thread interactions schema already exists",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const issueThreadInteractionsHash = await migrationHash("0063_issue_thread_interactions.sql");
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${issueThreadInteractionsHash}'`,
+        );
+
+        const tables = await sql.unsafe<{ table_name: string }[]>(
+          `
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = 'issue_thread_interactions'
+          `,
+        );
+        expect(tables).toHaveLength(1);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0063_issue_thread_interactions.sql"],
+        reason: "pending-migrations",
+      });
+
+      const repair = await reconcilePendingMigrationHistory(connectionString);
+      expect(repair).toEqual({
+        repairedMigrations: ["0063_issue_thread_interactions.sql"],
+        remainingMigrations: [],
+      });
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const constraints = await verifySql.unsafe<{ conname: string }[]>(
+          `
+            SELECT conname
+            FROM pg_constraint
+            WHERE conname IN (
+              'issue_thread_interactions_company_id_companies_id_fk',
+              'issue_thread_interactions_issue_id_issues_id_fk',
+              'issue_thread_interactions_source_comment_id_issue_comments_id_fk',
+              'issue_thread_interactions_source_run_id_heartbeat_runs_id_fk',
+              'issue_thread_interactions_created_by_agent_id_agents_id_fk',
+              'issue_thread_interactions_resolved_by_agent_id_agents_id_fk'
+            )
+            ORDER BY conname
+          `,
+        );
+        expect(constraints.map((row) => row.conname)).toEqual([
+          "issue_thread_interactions_company_id_companies_id_fk",
+          "issue_thread_interactions_created_by_agent_id_agents_id_fk",
+          "issue_thread_interactions_issue_id_issues_id_fk",
+          "issue_thread_interactions_resolved_by_agent_id_agents_id_fk",
+          "issue_thread_interactions_source_comment_id_issue_comments_id_f",
+          "issue_thread_interactions_source_run_id_heartbeat_runs_id_fk",
+        ]);
       } finally {
         await verifySql.end();
       }
