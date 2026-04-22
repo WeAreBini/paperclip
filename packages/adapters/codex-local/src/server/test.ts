@@ -86,6 +86,10 @@ export async function testEnvironment(
   const sharedCodexHome = resolveSharedCodexHomeDir(runtimeEnv);
   const managedCodexHome = resolveManagedCodexHomeDir(runtimeEnv, ctx.companyId);
   const sharedAuthPath = path.join(sharedCodexHome, "auth.json");
+  const probeEnv = {
+    ...runtimeEnv,
+    CODEX_HOME: sharedCodexHome,
+  };
 
   checks.push({
     code: "codex_home_paths",
@@ -125,22 +129,21 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
     });
   } else {
-    const codexHome = isNonEmpty(env.CODEX_HOME) ? env.CODEX_HOME : undefined;
-    const codexAuth = await readCodexAuthInfo(codexHome).catch(() => null);
+    const codexAuth = await readCodexAuthInfo(sharedCodexHome).catch(() => null);
     if (codexAuth) {
       hasAuthConfigured = true;
       checks.push({
         code: "codex_native_auth_present",
         level: "info",
         message: "Codex is authenticated via its own auth configuration.",
-        detail: codexAuth.email ? `Logged in as ${codexAuth.email}.` : `Credentials found in ${path.join(codexHome ?? codexHomeDir(), "auth.json")}.`,
+        detail: codexAuth.email ? `Logged in as ${codexAuth.email}.` : `Credentials found in ${sharedAuthPath}.`,
       });
     } else {
       checks.push({
         code: "codex_openai_api_key_missing",
         level: "warn",
         message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
-        detail: `Paperclip looked for Codex auth at ${sharedAuthPath}. Service HOME is ${runtimeEnv.HOME ?? process.env.HOME ?? codexHomeDir()}.`,
+        detail: `Paperclip looked for Codex auth at ${sharedAuthPath}. Service HOME is ${runtimeEnv.HOME ?? process.env.HOME ?? codexHomeDir()}. PAPERCLIP_HOME is ${runtimeEnv.PAPERCLIP_HOME ?? process.env.PAPERCLIP_HOME ?? "(unset)"}.`,
         hint: `Set OPENAI_API_KEY in adapter env, shell environment, or run \`codex auth\` so credentials are available at ${sharedAuthPath}.`,
       });
     }
@@ -175,7 +178,7 @@ export async function testEnvironment(
         args,
         {
           cwd,
-          env,
+          env: probeEnv,
           timeoutSec: 45,
           graceSec: 5,
           stdin: "Respond with hello.",

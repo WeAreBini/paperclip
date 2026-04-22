@@ -103,6 +103,41 @@ describe("codex_local environment diagnostics", () => {
     }
   });
 
+  it("prefers PAPERCLIP_HOME for shared Codex auth when CODEX_HOME is unset", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-paperclip-home-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const paperclipHome = path.join(root, "paperclip-home");
+    const codexHome = path.join(paperclipHome, ".codex");
+    const cwd = path.join(root, "workspace");
+
+    vi.stubEnv("HOME", path.join(root, "unix-home"));
+    vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+
+    try {
+      await fs.mkdir(codexHome, { recursive: true });
+      await fs.writeFile(
+        path.join(codexHome, "auth.json"),
+        JSON.stringify({ accessToken: "fake-token", accountId: "acct-1" }),
+      );
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          command: process.execPath,
+          cwd,
+        },
+      });
+
+      expect(result.checks.some((check) => check.code === "codex_native_auth_present")).toBe(true);
+      expect(result.checks.find((check) => check.code === "codex_home_paths")?.detail).toContain(codexHome);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("auto-adds --skip-git-repo-check for hello probes outside a git repo", async () => {
     const root = path.join(
       os.tmpdir(),

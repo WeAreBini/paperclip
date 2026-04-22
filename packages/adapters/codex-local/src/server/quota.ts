@@ -1,16 +1,14 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import { resolveSharedCodexHomeDir } from "./codex-home.js";
 
 const CODEX_USAGE_SOURCE_RPC = "codex-rpc";
 const CODEX_USAGE_SOURCE_WHAM = "codex-wham";
 
 export function codexHomeDir(): string {
-  const fromEnv = process.env.CODEX_HOME;
-  if (typeof fromEnv === "string" && fromEnv.trim().length > 0) return fromEnv.trim();
-  return path.join(os.homedir(), ".codex");
+  return resolveSharedCodexHomeDir(process.env);
 }
 
 interface CodexLegacyAuthFile {

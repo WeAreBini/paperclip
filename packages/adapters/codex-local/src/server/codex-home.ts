@@ -12,6 +12,16 @@ function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function resolveRuntimeHomeDir(env: NodeJS.ProcessEnv): string {
+  const paperclipHome = nonEmpty(env.PAPERCLIP_HOME);
+  if (paperclipHome) return path.resolve(paperclipHome);
+
+  const home = nonEmpty(env.HOME);
+  if (home) return path.resolve(home);
+
+  return os.homedir();
+}
+
 export async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
@@ -20,7 +30,7 @@ export function resolveSharedCodexHomeDir(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   const fromEnv = nonEmpty(env.CODEX_HOME);
-  return fromEnv ? path.resolve(fromEnv) : path.join(os.homedir(), ".codex");
+  return fromEnv ? path.resolve(fromEnv) : path.join(resolveRuntimeHomeDir(env), ".codex");
 }
 
 function isWorktreeMode(env: NodeJS.ProcessEnv): boolean {
@@ -31,7 +41,7 @@ export function resolveManagedCodexHomeDir(
   env: NodeJS.ProcessEnv,
   companyId?: string,
 ): string {
-  const paperclipHome = nonEmpty(env.PAPERCLIP_HOME) ?? path.resolve(os.homedir(), ".paperclip");
+  const paperclipHome = nonEmpty(env.PAPERCLIP_HOME) ?? path.resolve(resolveRuntimeHomeDir(env), ".paperclip");
   const instanceId = nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? DEFAULT_PAPERCLIP_INSTANCE_ID;
   return companyId
     ? path.resolve(paperclipHome, "instances", instanceId, "companies", companyId, "codex-home")
