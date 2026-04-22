@@ -1,6 +1,15 @@
 FROM node:lts-trixie-slim AS base
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git && rm -rf /var/lib/apt/lists/*
-RUN corepack enable
+ARG USER_UID=1000
+ARG USER_GID=1000
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 \
+  && rm -rf /var/lib/apt/lists/* \
+  && corepack enable
+
+# Modify the existing node user/group to have the specified UID/GID to match host user
+RUN usermod -u $USER_UID --non-unique node \
+  && groupmod -g $USER_GID --non-unique node \
+  && usermod -g $USER_GID -d /paperclip node
 
 FROM base AS deps
 WORKDIR /app
@@ -11,6 +20,7 @@ COPY ui/package.json ui/
 COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
+COPY packages/mcp-server/package.json packages/mcp-server/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
@@ -25,39 +35,27 @@ RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/cli/node_modules ./cli/node_modules
-COPY --from=deps /app/server/node_modules ./server/node_modules
-COPY --from=deps /app/ui/node_modules ./ui/node_modules
-COPY --from=deps /app/packages ./packages
+COPY --from=deps /app /app
 COPY . .
-RUN pnpm --filter @paperclipai/db generate
-RUN pnpm --filter @paperclipai/db build
-RUN pnpm --filter @paperclipai/shared build || true
-RUN pnpm --filter @paperclipai/adapter-utils build || true
-RUN pnpm --filter @paperclipai/adapter-claude-local build || true
-RUN pnpm --filter @paperclipai/adapter-codex-local build || true
-RUN pnpm --filter @paperclipai/adapter-cursor-local build || true
-RUN pnpm --filter @paperclipai/adapter-gemini-local build || true
-RUN pnpm --filter @paperclipai/adapter-openclaw-gateway build || true
-RUN pnpm --filter @paperclipai/adapter-opencode-local build || true
-RUN pnpm --filter @paperclipai/adapter-pi-local build || true
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
-RUN find packages -name "package.json" -exec sed -i -e 's|"./src/\(.*\)\.ts"|"./dist/\1.js"|g' {} +
-RUN ls -la server/dist/ || echo "server/dist not found"
-
-FROM node:20-bookworm-slim AS production
+FROM base AS production
+ARG USER_UID=1000
+ARG USER_GID=1000
 WORKDIR /app
-
 COPY --chown=node:node --from=build /app /app
-
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends openssh-client jq \
+  && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
+
+COPY scripts/docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
@@ -66,13 +64,15 @@ ENV NODE_ENV=production \
   SERVE_UI=true \
   PAPERCLIP_HOME=/paperclip \
   PAPERCLIP_INSTANCE_ID=default \
+  USER_UID=${USER_UID} \
+  USER_GID=${USER_GID} \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
-  PAPERCLIP_DEPLOYMENT_EXPOSURE=public
+  PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
+  OPENCODE_ALLOW_ALL_MODELS=true
 
 VOLUME ["/paperclip"]
-RUN mkdir -p /paperclip/instances/default && chown -R node:node /paperclip
-
 EXPOSE 3100
-USER node
-CMD ["sh", "-c", "node --import ./server/node_modules/tsx/dist/loader.mjs packages/db/dist/migrate.js && node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js"]
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
