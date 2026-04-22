@@ -544,6 +544,96 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
   );
 
   it(
+    "skips already-applied statements when replaying partial migration 0049",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const issueRelationsHash = await migrationHash("0049_flawless_abomination.sql");
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${issueRelationsHash}'`,
+        );
+        await sql.unsafe('DROP INDEX IF EXISTS "issue_relations_company_type_idx"');
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0049_flawless_abomination.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const tables = await verifySql.unsafe<{ table_name: string }[]>(
+          `
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = 'issue_relations'
+          `,
+        );
+        expect(tables.map((row) => row.table_name)).toEqual(["issue_relations"]);
+
+        const constraints = await verifySql.unsafe<{ conname: string }[]>(
+          `
+            SELECT conname
+            FROM pg_constraint
+            WHERE conname IN (
+              'issue_relations_type_check',
+              'issue_relations_company_id_companies_id_fk',
+              'issue_relations_issue_id_issues_id_fk',
+              'issue_relations_related_issue_id_issues_id_fk',
+              'issue_relations_created_by_agent_id_agents_id_fk'
+            )
+            ORDER BY conname
+          `,
+        );
+        expect(constraints.map((row) => row.conname)).toEqual([
+          'issue_relations_company_id_companies_id_fk',
+          'issue_relations_created_by_agent_id_agents_id_fk',
+          'issue_relations_issue_id_issues_id_fk',
+          'issue_relations_related_issue_id_issues_id_fk',
+          'issue_relations_type_check',
+        ]);
+
+        const indexes = await verifySql.unsafe<{ indexname: string }[]>(
+          `
+            SELECT indexname
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND tablename = 'issue_relations'
+            ORDER BY indexname
+          `,
+        );
+        expect(indexes.map((row) => row.indexname)).toEqual(
+          expect.arrayContaining([
+            'issue_relations_company_edge_uq',
+            'issue_relations_company_issue_idx',
+            'issue_relations_company_related_issue_idx',
+            'issue_relations_company_type_idx',
+            'issue_relations_pkey',
+          ]),
+        );
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
     "repairs migration 0063 when issue thread interactions schema already exists",
     async () => {
       const connectionString = await createTempDatabase();

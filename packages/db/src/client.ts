@@ -188,6 +188,12 @@ async function orderMigrationsByJournal(migrationFiles: string[]): Promise<strin
 
 type SqlExecutor = Pick<ReturnType<typeof postgres>, "unsafe">;
 
+function isRelationAlreadyExistsError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const code = "code" in error ? (error as { code?: unknown }).code : undefined;
+  return code === "42P07";
+}
+
 async function runInTransaction(sql: SqlExecutor, action: () => Promise<void>): Promise<void> {
   await sql.unsafe("BEGIN");
   try {
@@ -198,6 +204,22 @@ async function runInTransaction(sql: SqlExecutor, action: () => Promise<void>): 
       await sql.unsafe("ROLLBACK");
     } catch {
       // Ignore rollback failures and surface the original error.
+    }
+    throw error;
+  }
+}
+
+async function applyMigrationStatementSafely(
+  sql: ReturnType<typeof postgres>,
+  statement: string,
+): Promise<void> {
+  if (await migrationStatementAlreadyApplied(sql, statement)) return;
+
+  try {
+    await sql.unsafe(statement);
+  } catch (error) {
+    if (isRelationAlreadyExistsError(error) && (await migrationStatementAlreadyApplied(sql, statement))) {
+      return;
     }
     throw error;
   }
@@ -328,7 +350,7 @@ async function applyPendingMigrationsManually(
           await repairMigrationFromExistingSchema(sql, migrationFile);
         } else {
           for (const statement of splitMigrationStatements(migrationContent)) {
-            await sql.unsafe(statement);
+            await applyMigrationStatementSafely(sql, statement);
           }
         }
 
