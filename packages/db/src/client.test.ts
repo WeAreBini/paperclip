@@ -618,4 +618,77 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+
+  it(
+    "repairs 0063 and reapplies follow-up repair migration for partial issue thread interaction schema",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const issueThreadInteractionsHash = await migrationHash("0063_issue_thread_interactions.sql");
+        const issueThreadInteractionsRepairHash = await migrationHash(
+          "0065_issue_thread_interactions_repair.sql",
+        );
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash IN ('${issueThreadInteractionsHash}', '${issueThreadInteractionsRepairHash}')`,
+        );
+        await sql.unsafe(
+          'ALTER TABLE "issue_thread_interactions" DROP CONSTRAINT IF EXISTS "issue_thread_interactions_issue_id_issues_id_fk"',
+        );
+        await sql.unsafe('DROP INDEX IF EXISTS "issue_thread_interactions_issue_idx"');
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: [
+          "0063_issue_thread_interactions.sql",
+          "0065_issue_thread_interactions_repair.sql",
+        ],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const constraints = await verifySql.unsafe<{ conname: string }[]>(
+          `
+            SELECT conname
+            FROM pg_constraint
+            WHERE conname IN (
+              'issue_thread_interactions_issue_id_issues_id_fk'
+            )
+          `,
+        );
+        expect(constraints.map((row) => row.conname)).toEqual([
+          "issue_thread_interactions_issue_id_issues_id_fk",
+        ]);
+
+        const indexes = await verifySql.unsafe<{ indexname: string }[]>(
+          `
+            SELECT indexname
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND indexname = 'issue_thread_interactions_issue_idx'
+          `,
+        );
+        expect(indexes.map((row) => row.indexname)).toEqual([
+          "issue_thread_interactions_issue_idx",
+        ]);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
 });

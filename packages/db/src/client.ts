@@ -110,6 +110,21 @@ async function readMigrationFileContent(migrationFile: string): Promise<string> 
   return readFile(new URL(`./migrations/${migrationFile}`, import.meta.url), "utf8");
 }
 
+async function migrationCanBeSafelyReconciledByExistingSchema(
+  sql: ReturnType<typeof postgres>,
+  migrationFile: string,
+): Promise<boolean> {
+  // 0063 can fail on real databases after the table is created but before the
+  // migration journal is updated. A follow-up migration reasserts the indexes
+  // and foreign keys, so once the base table exists we can safely repair the
+  // missing journal entry instead of replaying the original CREATE TABLE.
+  if (migrationFile === "0063_issue_thread_interactions.sql") {
+    return tableExists(sql, "issue_thread_interactions");
+  }
+
+  return false;
+}
+
 async function orderMigrationsByJournal(migrationFiles: string[]): Promise<string[]> {
   const journalEntries = await listJournalMigrationEntries();
   const orderByFileName = new Map(journalEntries.map((entry) => [entry.fileName, entry.order]));
@@ -513,7 +528,10 @@ export async function reconcilePendingMigrationHistory(
     for (const migrationFile of state.pendingMigrations) {
       const migrationContent = await readMigrationFileContent(migrationFile);
       const alreadyApplied = await migrationContentAlreadyApplied(sql, migrationContent);
-      if (!alreadyApplied) break;
+      const canRepairFromSchema = !alreadyApplied
+        ? await migrationCanBeSafelyReconciledByExistingSchema(sql, migrationFile)
+        : false;
+      if (!alreadyApplied && !canRepairFromSchema) break;
 
       const hash = createHash("sha256").update(migrationContent).digest("hex");
       const folderMillis = folderMillisByFile.get(migrationFile) ?? Date.now();
