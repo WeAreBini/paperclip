@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { asBoolean, asString, asStringArray } from "@paperclipai/adapter-utils/server-utils";
 import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
@@ -28,6 +30,18 @@ function formatFastModeSupportedModels(): string {
   return CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.join(", ");
 }
 
+function isInsideGitRepo(cwd: string): boolean {
+  let current = path.resolve(cwd);
+
+  while (true) {
+    if (existsSync(path.join(current, ".git"))) return true;
+
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
 export function buildCodexExecArgs(
   config: unknown,
   options: { resumeSessionId?: string | null } = {},
@@ -45,7 +59,11 @@ export function buildCodexExecArgs(
     record.dangerouslyBypassApprovalsAndSandbox,
     asBoolean(record.dangerouslyBypassSandbox, false),
   );
+  const cwd = asString(record.cwd, "").trim();
   const extraArgs = readExtraArgs(record);
+  const hasExplicitSkipGitRepoCheck = extraArgs.includes("--skip-git-repo-check");
+  const shouldSkipGitRepoCheck =
+    !hasExplicitSkipGitRepoCheck && cwd.length > 0 && !isInsideGitRepo(cwd);
 
   const args = ["exec", "--json"];
   if (search) args.unshift("--search");
@@ -57,6 +75,7 @@ export function buildCodexExecArgs(
   if (fastModeApplied) {
     args.push("-c", 'service_tier="fast"', "-c", "features.fast_mode=true");
   }
+  if (shouldSkipGitRepoCheck) args.push("--skip-git-repo-check");
   if (extraArgs.length > 0) args.push(...extraArgs);
   if (options.resumeSessionId) args.push("resume", options.resumeSessionId, "-");
   else args.push("-");

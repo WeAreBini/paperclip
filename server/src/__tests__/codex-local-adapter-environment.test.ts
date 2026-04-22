@@ -99,6 +99,58 @@ describe("codex_local environment diagnostics", () => {
     }
   });
 
+  it("auto-adds --skip-git-repo-check for hello probes outside a git repo", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-local-probe-posix-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const cwd = path.join(root, "workspace");
+    const fakeCodex = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const argv = process.argv.slice(2);
+if (capturePath) {
+  fs.writeFileSync(capturePath, JSON.stringify({ argv }), "utf8");
+}
+if (!argv.includes("--skip-git-repo-check")) {
+  console.error("git repository required");
+  process.exit(1);
+}
+console.log(JSON.stringify({ type: "thread.started", thread_id: "test-thread" }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
+`;
+
+    try {
+      await fs.mkdir(cwd, { recursive: true });
+      await fs.writeFile(fakeCodex, script, "utf8");
+      await fs.chmod(fakeCodex, 0o755);
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          command: fakeCodex,
+          cwd,
+          env: {
+            OPENAI_API_KEY: "test-key",
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+        },
+      });
+
+      expect(result.status).toBe("pass");
+      expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as { argv: string[] };
+      expect(capture.argv).toContain("--skip-git-repo-check");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   itWindows("runs the hello probe when Codex is available via a Windows .cmd wrapper", async () => {
     const root = path.join(
       os.tmpdir(),

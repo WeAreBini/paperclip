@@ -120,6 +120,7 @@ describe("codex execute", () => {
       expect(result.errorMessage).toBeNull();
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.argv).toContain("--skip-git-repo-check");
       expect(capture.codexHome).toBe(managedCodexHome);
 
       const managedAuth = path.join(managedCodexHome, "auth.json");
