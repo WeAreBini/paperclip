@@ -2,7 +2,7 @@
 FROM node:20-bookworm-slim
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git \
+  && apt-get install -y --no-install-recommends ca-certificates curl git gosu \
   && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 
@@ -33,13 +33,14 @@ RUN pnpm --filter @paperclipai/server build
 # Fix package.json exports to point to compiled JS instead of TS
 RUN find packages -name "package.json" -exec sed -i -e 's|"./src/\(.*\)\.ts"|"./dist/\1.js"|g' {} +
 
+COPY scripts/docker-entrypoint-railway.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint-railway.sh
+
 # Create user and set up directories
 RUN groupadd -g 1001 paperclip && \
     useradd -r -u 1001 -g paperclip -s /usr/sbin/nologin paperclip && \
     mkdir -p /paperclip/instances/default && \
     chown -R paperclip:paperclip /paperclip /app
-
-USER paperclip
 
 ENV NODE_ENV=production \
   DATABASE_URL="${DATABASE_URL}" \
@@ -56,6 +57,8 @@ EXPOSE 3100
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s \
     CMD wget --no-verbose --tries=1 --spider http://localhost:3100/api/health || exit 1
+
+ENTRYPOINT ["docker-entrypoint-railway.sh"]
 
 # Run migrations then start server using tsx loader for TS imports
 CMD ["sh", "-c", "node --import ./server/node_modules/tsx/dist/loader.mjs packages/db/dist/migrate.js && node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js"]
