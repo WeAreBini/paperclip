@@ -9,6 +9,42 @@ import * as schema from "./schema/index.js";
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url));
+const ISSUE_THREAD_INTERACTIONS_REPAIR_STATEMENTS = [
+  `DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'issue_thread_interactions_company_id_companies_id_fk') THEN
+  ALTER TABLE "issue_thread_interactions" ADD CONSTRAINT "issue_thread_interactions_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE no action ON UPDATE no action;
+ END IF;
+END $$;`,
+  `DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'issue_thread_interactions_issue_id_issues_id_fk') THEN
+  ALTER TABLE "issue_thread_interactions" ADD CONSTRAINT "issue_thread_interactions_issue_id_issues_id_fk" FOREIGN KEY ("issue_id") REFERENCES "public"."issues"("id") ON DELETE no action ON UPDATE no action;
+ END IF;
+END $$;`,
+  `DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'issue_thread_interactions_source_comment_id_issue_comments_id_fk') THEN
+  ALTER TABLE "issue_thread_interactions" ADD CONSTRAINT "issue_thread_interactions_source_comment_id_issue_comments_id_fk" FOREIGN KEY ("source_comment_id") REFERENCES "public"."issue_comments"("id") ON DELETE set null ON UPDATE no action;
+ END IF;
+END $$;`,
+  `DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'issue_thread_interactions_source_run_id_heartbeat_runs_id_fk') THEN
+  ALTER TABLE "issue_thread_interactions" ADD CONSTRAINT "issue_thread_interactions_source_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("source_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE set null ON UPDATE no action;
+ END IF;
+END $$;`,
+  `DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'issue_thread_interactions_created_by_agent_id_agents_id_fk') THEN
+  ALTER TABLE "issue_thread_interactions" ADD CONSTRAINT "issue_thread_interactions_created_by_agent_id_agents_id_fk" FOREIGN KEY ("created_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;
+ END IF;
+END $$;`,
+  `DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'issue_thread_interactions_resolved_by_agent_id_agents_id_fk') THEN
+  ALTER TABLE "issue_thread_interactions" ADD CONSTRAINT "issue_thread_interactions_resolved_by_agent_id_agents_id_fk" FOREIGN KEY ("resolved_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;
+ END IF;
+END $$;`,
+  'CREATE INDEX IF NOT EXISTS "issue_thread_interactions_issue_idx" ON "issue_thread_interactions" USING btree ("issue_id");',
+  'CREATE INDEX IF NOT EXISTS "issue_thread_interactions_company_issue_created_at_idx" ON "issue_thread_interactions" USING btree ("company_id","issue_id","created_at");',
+  'CREATE INDEX IF NOT EXISTS "issue_thread_interactions_company_issue_status_idx" ON "issue_thread_interactions" USING btree ("company_id","issue_id","status");',
+  'CREATE INDEX IF NOT EXISTS "issue_thread_interactions_source_comment_idx" ON "issue_thread_interactions" USING btree ("source_comment_id");',
+];
 
 function createUtilitySql(url: string) {
   return postgres(url, { max: 1, onnotice: () => {} });
@@ -123,6 +159,17 @@ async function migrationCanBeSafelyReconciledByExistingSchema(
   }
 
   return false;
+}
+
+async function repairMigrationFromExistingSchema(
+  sql: SqlExecutor,
+  migrationFile: string,
+): Promise<void> {
+  if (migrationFile !== "0063_issue_thread_interactions.sql") return;
+
+  for (const statement of ISSUE_THREAD_INTERACTIONS_REPAIR_STATEMENTS) {
+    await sql.unsafe(statement);
+  }
 }
 
 async function orderMigrationsByJournal(migrationFiles: string[]): Promise<string[]> {
@@ -274,9 +321,15 @@ async function applyPendingMigrationsManually(
       );
       if (existingEntry) continue;
 
+      const canRepairFromSchema = await migrationCanBeSafelyReconciledByExistingSchema(sql, migrationFile);
+
       await runInTransaction(sql, async () => {
-        for (const statement of splitMigrationStatements(migrationContent)) {
-          await sql.unsafe(statement);
+        if (canRepairFromSchema) {
+          await repairMigrationFromExistingSchema(sql, migrationFile);
+        } else {
+          for (const statement of splitMigrationStatements(migrationContent)) {
+            await sql.unsafe(statement);
+          }
         }
 
         await recordMigrationHistoryEntry(
@@ -532,6 +585,10 @@ export async function reconcilePendingMigrationHistory(
         ? await migrationCanBeSafelyReconciledByExistingSchema(sql, migrationFile)
         : false;
       if (!alreadyApplied && !canRepairFromSchema) break;
+
+      if (canRepairFromSchema) {
+        await repairMigrationFromExistingSchema(sql, migrationFile);
+      }
 
       const hash = createHash("sha256").update(migrationContent).digest("hex");
       const folderMillis = folderMillisByFile.get(migrationFile) ?? Date.now();
